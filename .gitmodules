@@ -1,6 +1,6 @@
 [submodule "robot4ws_simulations"]
 	path = robot4ws_simulations
-	url = https://github.com/unitsSpaceLab/robot4ws_simulations.git
+	url = https://github.com/khalidbourr/robot4ws_simulations.git
 	branch = ros2_humble
         update = rebase
 [submodule "robot4ws_msgs"]
@@ -10,12 +10,12 @@
         update = rebase
 [submodule "robot4ws_description"]
 	path = robot4ws_description
-	url = https://github.com/unitsSpaceLab/robot4ws_description.git
+	url = https://github.com/khalidbourr/robot4ws_description.git
 	branch = ros2_humble
 	update = rebase
 [submodule "robot4ws_gazebo_plugins"]
 	path = robot4ws_gazebo_plugins
-	url = https://github.com/unitsSpaceLab/robot4ws-gazebo-plugins.git
+	url = https://github.com/khalidbourr/robot4ws-gazebo-plugins.git
 	branch = ros2_humble
         update = rebase
 [submodule "robot4ws_kinematics"]
