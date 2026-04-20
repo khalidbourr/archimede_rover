@@ -1,0 +1,57 @@
+# For controller node testing. Publish from terminal with:
+# ros2 topic pub /path nav_msgs/msg/Path "$(cat /path/to/test_path_msg.yaml)"
+
+header:
+  stamp:
+    sec: 0
+    nanosec: 0
+  frame_id: "Archimede_odom"
+
+poses:
+  - header:
+      stamp:
+        sec: 0
+        nanosec: 0
+      frame_id: "Archimede_odom"
+    pose:
+      position:
+        x: 3
+        y: 0.0
+        z: 0.0
+      orientation:
+        x: 0.0
+        y: 0.0
+        z: 0.0
+        w: 1.0
+
+  # - header:
+  #     stamp:
+  #       sec: 0
+  #       nanosec: 0
+  #     frame_id: "Archimede_odom"
+  #   pose:
+  #     position:
+  #       x: 5
+  #       y: 1
+  #       z: 0.0
+  #     orientation:
+  #       x: 0.0
+  #       y: 0.0
+  #       z: 0.0
+  #       w: 1.0
+
+  # - header:
+  #     stamp:
+  #       sec: 0
+  #       nanosec: 0
+  #     frame_id: "Archimede_odom"
+  #   pose:
+  #     position:
+  #       x: 7
+  #       y: 5
+  #       z: 0.0
+  #     orientation:
+  #       x: 0.0
+  #       y: 0.0
+  #       z: 0.0
+  #       w: 0.1
