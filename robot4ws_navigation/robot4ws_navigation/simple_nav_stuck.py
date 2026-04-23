@@ -11,9 +11,10 @@ from rclpy.node import Node
 import numpy as np
 from nav_msgs.msg import OccupancyGrid, Path, Odometry
 from geometry_msgs.msg import PoseStamped, Twist
+from std_msgs.msg import String
 from heapq import heappush, heappop
 import math
-import tf2_ros
+import json
 
 
 # =============================
@@ -65,94 +66,44 @@ def trim(val, max_val):
 class MapHandlerNode(Node):
     def __init__(self):
         super().__init__('map_handler')
+        self.grid = None
+        self.create_subscription(String, 'global_map_update', self._map_cb, 10)
+        self.pub = self.create_publisher(OccupancyGrid, 'global_map', 10)
+        self.get_logger().info('Map handler node started (waiting for first globalMap)')
 
-        self.declare_parameter('width', 500)
-        self.declare_parameter('height', 500)
-        self.declare_parameter('resolution', 0.2)
+    def _map_cb(self, msg):
+        try:
+            payload = json.loads(msg.data)
+        except json.JSONDecodeError as e:
+            self.get_logger().warn(f"global_map_update: invalid JSON: {e}")
+            return
 
-        w = self.get_parameter('width').value
-        h = self.get_parameter('height').value
-        res = self.get_parameter('resolution').value
+        cols = int(payload['cols'])
+        rows = int(payload['rows'])
+        res = float(payload['cellSize'])
+        ox = float(payload.get('originX', 0.0))
+        oy = float(payload.get('originY', 0.0))
 
-        self.map = -1 * np.ones((h, w), dtype=np.int8)
+        # Rebuild from scratch — tuple space is the authoritative state
+        grid_map = -1 * np.ones((rows, cols), dtype=np.int8)
+        for c in payload.get('cells', []):
+            gx, gy = c['gx'], c['gy']
+            if 0 <= gx < cols and 0 <= gy < rows:
+                grid_map[gy, gx] = 0 if c['traversable'] else 100
 
         self.grid = OccupancyGrid()
         self.grid.info.resolution = res
-        self.grid.info.width = w
-        self.grid.info.height = h
-        self.grid.info.origin.position.x = -w * res / 2.0
-        self.grid.info.origin.position.y = -h * res / 2.0
+        self.grid.info.width = cols
+        self.grid.info.height = rows
+        self.grid.info.origin.position.x = ox
+        self.grid.info.origin.position.y = oy
         self.grid.header.frame_id = 'map'
-
-        self.tf_buffer = tf2_ros.Buffer()
-        self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
-
-        self.sub = self.create_subscription(OccupancyGrid, 'submap', self.submap_callback, 10)
-
-        self.pub = self.create_publisher(OccupancyGrid, 'global_map', 10)
-
-        self.get_logger().info('Map handler node started')
-
-    def submap_callback(self, msg):
-        try:
-            transform = self.tf_buffer.lookup_transform(
-                'map', msg.header.frame_id, rclpy.time.Time())
-        except Exception as e:
-            self.get_logger().warn(f"TF not available: {e}")
-            return
-
-        R, T = transform_to_matrix(transform)
-
-        sub = np.array(msg.data, dtype=np.int8).reshape(
-            msg.info.height, msg.info.width)
-
-        h, w = sub.shape
-
-        # grid indices
-        xs, ys = np.meshgrid(np.arange(w), np.arange(h))
-
-        # convert to local metric coordinates using submap origin
-        px = msg.info.origin.position.x + xs * msg.info.resolution
-        py = msg.info.origin.position.y + ys * msg.info.resolution
-
-        points = np.stack([px, py], axis=-1).reshape(-1, 2)
-
-        # apply rotation + translation
-        transformed = (R @ points.T).T + T
-
-        mx, my = world_to_map(transformed[:, 0], transformed[:, 1], self.grid.info)
-
-        # flatten submap
-        values = sub.flatten()
-
-        # valid indices
-        valid = (
-            (mx >= 0) & (mx < self.grid.info.width) &
-            (my >= 0) & (my < self.grid.info.height) &
-            (values != -1)
-        )
-
-        mx = mx[valid]
-        my = my[valid]
-        values = values[valid]
-
-        # merge
-        current_vals = self.map[my, mx]
-
-        unknown_mask = current_vals == -1
-        self.map[my[unknown_mask], mx[unknown_mask]] = values[unknown_mask]
-
-        known_mask = ~unknown_mask
-        self.map[my[known_mask], mx[known_mask]] = np.maximum(
-            current_vals[known_mask], values[known_mask])
-
-        self.publish()
-
-    def publish(self):
-        self.grid.data = self.map.flatten().tolist()
+        self.grid.data = grid_map.flatten().tolist()
         self.grid.header.stamp = self.get_clock().now().to_msg()
-        self.grid.header.frame_id = 'map'
         self.pub.publish(self.grid)
+
+        known = int(((grid_map == 0) | (grid_map == 100)).sum())
+        self.get_logger().info(f'Map updated: {cols}x{rows}, {known} known cells')
 
 
 # =============================
@@ -177,6 +128,7 @@ class PlannerNode(Node):
         self.get_logger().info('Planner node started')
 
     def map_cb(self, msg):
+        self.get_logger().info(f'map received: {msg.info.width}x{msg.info.height}, {sum(1 for c in msg.data if c != -1)} known cells')
         self.map = np.array(msg.data, dtype=np.int8).reshape(
             msg.info.height, msg.info.width)
         self.map_info = msg.info
@@ -201,9 +153,21 @@ class PlannerNode(Node):
                             self.goal.position.y,
                             self.map_info)
 
+        h, w = self.map.shape
+        if not (0 <= start[0] < w and 0 <= start[1] < h):
+            self.get_logger().warn(
+                f'start {start} outside grid {w}x{h} — skipping plan')
+            return
+        if not (0 <= goal[0] < w and 0 <= goal[1] < h):
+            self.get_logger().warn(
+                f'goal {goal} outside grid {w}x{h} — skipping plan')
+            return
+
         path = self.a_star(start, goal)
         if path:
             self.publish_path(path)
+        else:
+            self.get_logger().warn('A* found no path')
 
     def a_star(self, start, goal):
         h, w = self.map.shape
@@ -295,8 +259,8 @@ class ControllerNode(Node):
         self.current_idx = 0
         self.target_tolerance = 0.2
 
-        self.speed = 0.2
-        self.max_ang_speed = 0.2
+        self.speed = 0.5
+        self.max_ang_speed = 0.6
 
         self.last_time = self.get_clock().now().nanoseconds * 1e-9
 
@@ -304,13 +268,23 @@ class ControllerNode(Node):
         self.create_subscription(Odometry, 'odom', self.odom_cb, 1)
 
         self.pub = self.create_publisher(Twist, 'cmd_vel', 1)
+        self.status_pub = self.create_publisher(String, 'nav_status', 10)
         self.timer = self.create_timer(0.1, self.control_loop)
 
+        self.goal_reached_published = False
+        self._last_status = None
+
         self.get_logger().info('Node started')
+
+    def _set_status(self, status):
+        if self._last_status != status:
+            self.status_pub.publish(String(data=status))
+            self._last_status = status
 
     def path_cb(self, msg):
         self.path = msg.poses
         self.current_idx = 0
+        self.goal_reached_published = False
         self.get_logger().info('New path received')
 
     def odom_cb(self, msg):
@@ -338,10 +312,14 @@ class ControllerNode(Node):
                 break
 
         if self.current_idx == len(self.path):
-            self.get_logger().info('Goal reached')
             self.pub.publish(Twist())
-            # TODO: shutdown node, or wait without stamping every time
+            if not self.goal_reached_published:
+                self._set_status('goal_reached')
+                self.goal_reached_published = True
+                self.get_logger().info('Goal reached')
             return
+
+        self._set_status('navigating')
 
         target = self.path[self.current_idx].pose.position
 
@@ -365,12 +343,13 @@ class ControllerNode(Node):
         angle_to_target = math.atan2(target.y - ry, target.x - rx)
 
         yaw = get_yaw(self.pose.orientation)
-        angle_error = angle_to_target - yaw
+        angle_error = math.atan2(math.sin(angle_to_target - yaw),
+                                 math.cos(angle_to_target - yaw))
 
         # TODO: angular vel might be scaled to linear one
         cmd = Twist()
-        cmd.linear.x = self.speed
-        cmd.angular.z = trim(angle_error / 5, self.max_ang_speed)
+        cmd.linear.x = self.speed * max(0.0, math.cos(angle_error))
+        cmd.angular.z = trim(angle_error, self.max_ang_speed)
 
         self.pub.publish(cmd)
 
